@@ -33,33 +33,35 @@ class MariaDB implements DatabaseGenerator
      * @param Connection $connection
      * @return bool
      */
+    //TODO: removce static in front of function created
     public function created(Created $event, array $config, Connection $connection): bool
     {
         $createUser = config('tenancy.db.auto-create-tenant-database-user', true);
-
+        // TODO: TABLE NAME USER? org: CREATE USER IF NOT EXISTS IDENTIFIED BY ;
         $user = function ($connection) use ($config, $createUser) {
             if ($createUser) {
-                return $connection->statement("CREATE USER IF NOT EXISTS `{$config['username']}`@'{$config['host']}' IDENTIFIED BY '{$config['password']}'");
+                return $connection->statement("CREATE TABLE IF NOT EXISTS '`{$config['username']}`@`{$config['host']}`' ('{$config['password']}')");
             }
 
             return true;
         };
+        //  TODO: Are those correct expressions? 50: "CREATE DATABASE IF NOT EXISTS `{$config['database']}`"); 51 && 52,  org: DEFUALT CHARACTER SET '{$config['charset']'  &&  DEFAULT COLLATE;
         $create = function ($connection) use ($config) {
-            return $connection->statement("CREATE DATABASE IF NOT EXISTS `{$config['database']}`
-            DEFAULT CHARACTER SET {$config['charset']}
-            DEFAULT COLLATE {$config['collation']}");
-        };
-        $grant = function ($connection) use ($config, $createUser) {
-            if ($createUser) {
-                $privileges = config('tenancy.db.tenant-database-user-privileges', null) ?? 'ALL';
-                return $connection->statement("GRANT $privileges ON `{$config['database']}`.* TO `{$config['username']}`@'{$config['host']}'");
-            }
-
-            return true;
+            return $connection->statement("ATTACH DATABASE `{$config['database']}` AS `{$config['database']}`");
         };
 
-        return $connection->system($event->website)->transaction(function (IlluminateConnection $connection) use ($user, $create, $grant) {
-            return $user($connection) && $create($connection) && $grant($connection);
+        //TODO: Sqlite has no access control?
+//        $grant = function ($connection) use ($config, $createUser) {
+////            if ($createUser) {
+////                $privileges = config('tenancy.db.tenant-database-user-privileges', null) ?? 'ALL';
+////                return $connection->statement("GRANT SELECT ON `{$config['database']}`.* TO '{$config['username']}'@'{$config['host']}'");
+////            };
+////
+////            return true;
+////        };
+        //TODO: Remove $grant($connection);  org: return $user($connection) && $create($connection) && $grant($connection); on line 64
+        return $connection->system($event->website)->transaction(function (IlluminateConnection $connection) use ($user, $create) {
+            return $user($connection) && $create($connection);
         });
     }
 
@@ -111,7 +113,11 @@ class MariaDB implements DatabaseGenerator
     public function updatePassword(Website $website, array $config, Connection $connection): bool
     {
         $user = function (IlluminateConnection $connection) use ($config) {
-            return $connection->statement("ALTER USER `{$config['username']}`@'{$config['host']}' IDENTIFIED BY '{$config['password']}'");
+            if ($this->isMariaDb($connection)) {
+                return $connection->statement("UPDATE mysql.user SET Password=PASSWORD('{$config['password']}') WHERE User='{$config['username']}' AND Host='{$config['host']}'");
+            } else {
+                return $connection->statement("ALTER USER `{$config['username']}`@'{$config['host']}' IDENTIFIED BY '{$config['password']}'");
+            }
         };
 
         $flush = function (IlluminateConnection $connection) {
@@ -121,5 +127,13 @@ class MariaDB implements DatabaseGenerator
         return $connection->system($website)->transaction(function (IlluminateConnection $connection) use ($user, $flush) {
             return $user($connection) && $flush($connection);
         });
+    }
+
+    protected function isMariaDb(IlluminateConnection $connection): bool
+    {
+        $platform = $connection->getDoctrineSchemaManager()->getDatabasePlatform();
+        $reflect = new \ReflectionClass($platform);
+
+        return Str::startsWith($reflect->getShortName(), 'MariaDb');
     }
 }
